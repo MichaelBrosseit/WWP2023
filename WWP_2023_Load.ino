@@ -29,6 +29,7 @@ float DAC_Voltage_Cutin = 0;
 //Active Pitch Variables
 uint16_t theta_Position;
 float theta;
+float actual_Theta;
 //INA260 Reading Variables
 uint16_t L_Power = 0;   //Load Power (mW)
 uint16_t L_Power_Previous = 0;
@@ -57,14 +58,14 @@ float DAC_Voltage_Maximum = 3300;//(mV)
 
 //State Machine Variables
 enum States {StartUp, Optimize, Regulate, EStop_Safety, Discontinuity_Safety, Safety_Restart};
-States State = StartUp;
+States State = Optimize;
 enum PCC_Disconnect_States {Wait, RelayOn, Reconnection};
 PCC_Disconnect_States PCC_Disconnect_State = Wait;
 
 //Timer Intervals
 unsigned Fast_Interval = 10;
-unsigned Medium_Interval = 50;
-unsigned Slow_Interval = 500;
+unsigned Medium_Interval = 250;
+unsigned Slow_Interval = 1000;
 unsigned Safety_Restart_Interval = 5000;
 unsigned Pitch_Transient_Interval = 100;
 //Timers
@@ -75,9 +76,9 @@ unsigned long Timer_Safety_Restart;
 unsigned long Timer_RPM_Transient;
 
 bool load_Optimize_Enable = true;
-bool E_Stop;
-bool PCC_Disconnected;
-bool PCC_Relay;
+bool E_Stop = false;
+bool PCC_Disconnected = false;
+bool PCC_Relay = false;
 bool state_Machine_Enable = false;
 
 
@@ -86,7 +87,7 @@ bool state_Machine_Enable = false;
 void setup() {
   //Linear Actuator
   myServo.begin(32);
-  myServo.movingSpeed(ID_NUM, 750);
+  myServo.movingSpeed(ID_NUM, 800);
   Serial.begin(9600);           //Begin serial monitor
   dac.begin(0x66);              //Initialize DAC
   ina260.begin();               //Initialize INA 260
@@ -110,7 +111,7 @@ void loop() {
   {
     Timer_Fast = millis();
     read_EStop();
-    read_PCC_Disconnect();
+    //read_PCC_Disconnect();
     manage_State();
   }
 
@@ -123,6 +124,7 @@ void loop() {
   {
     Timer_Slow = millis();
     read_INA260();
+    read_Linear_Actuator_Position();
     optimize_Load();
     set_Load();
     PC_Comms ();
@@ -139,6 +141,7 @@ void manage_State() {
           State = Optimize;
           load_Optimize_Enable = true;
           theta = optimal_Theta;
+          set_Theta();
         }
         break;
 
@@ -171,12 +174,14 @@ void manage_State() {
         {
           State = Optimize;
           theta = optimal_Theta;
+          set_Theta();
         }
         break;
 
       case EStop_Safety:
         PCC_Relay = true;
         theta = brake_Theta;
+        set_Theta();
         load_Optimize_Enable = false;
         if (!E_Stop)
         {
@@ -187,6 +192,7 @@ void manage_State() {
       case Discontinuity_Safety:
         PCC_Relay = true;
         theta = brake_Theta;
+        set_Theta();
         load_Optimize_Enable = false;
         if (!PCC_Disconnected)
         {
@@ -196,9 +202,11 @@ void manage_State() {
 
       case Safety_Restart:
         theta = cutin_Theta;
+        set_Theta();
         if (millis() - Timer_Safety_Restart >= Safety_Restart_Interval)
         {
           Timer_Safety_Restart = millis();
+          load_Optimize_Enable = true;
           PCC_Relay = false;
           State = Optimize;
         }
@@ -211,7 +219,6 @@ void manage_State() {
     }
   }
   digitalWrite(PCC_Relay_Pin, PCC_Relay);
-  set_Theta();
 }
 
 void initialize_Timers() {
@@ -222,9 +229,7 @@ void initialize_Timers() {
   Timer_RPM_Transient = millis();
 }
 void initialize_Pins() {
-  //pinMode(Linear_Actuator_Tx, OUTPUT);
-  //pinMode(Linear_Actuator_Rx, INPUT);
-  //pinMode(Linear_Actuator_Enable, OUTPUT);
+  pinMode(Linear_Actuator_Enable, OUTPUT);
   pinMode(RPM_Pin, INPUT);
   pinMode(PCC_Relay_Pin, OUTPUT);
   pinMode(EStop_Pin, INPUT);
@@ -269,6 +274,10 @@ void read_INA260() {
 
 }
 
+void read_Linear_Actuator_Position() {
+  actual_Theta = (myServo.presentPosition(ID_NUM) - 208.084) / 31.3479;
+}
+
 void regulate_RPM() {
   if (millis() - Timer_RPM_Transient >= Pitch_Transient_Interval)
   {
@@ -276,6 +285,7 @@ void regulate_RPM() {
     if (RPM_Filtered < regulate_RPM_Setpoint || RPM_Filtered > 1.05 * regulate_RPM_Setpoint)
     {
       theta = theta + 0.003 * (RPM_Filtered - regulate_RPM_Setpoint);
+      set_Theta();
     }
   }
 }
@@ -308,31 +318,14 @@ void read_RPM() {
 
 void PC_Comms () {
   //---------------------------------------------------------------------------------------
-  if (Serial) // check performance cost on checking if serial is active
+  if (Serial)
   {
+    Serial.println("--------------------------------------");
     Serial.print("(p) PCC Relay: ");
     Serial.println(PCC_Relay ? "On" : "Off");
 
     Serial.print("(s) State Machine: ");
     Serial.println(state_Machine_Enable ? "Enabled" : "Disabled");
-
-    Serial.print("(o) Load Optimization: ");
-    Serial.println(load_Optimize_Enable ? "Enabled" : "Disabled");
-
-    Serial.print("RPM: ");
-    Serial.println(RPM_Filtered);
-
-    Serial.print("Load Voltage: ");
-    Serial.print(L_Voltage);
-    Serial.println(" mV");
-
-    Serial.print("Load Current: ");
-    Serial.print(L_Current);
-    Serial.println(" mA");
-
-    Serial.print("Load Power: ");
-    Serial.print(L_Power);
-    Serial.println(" mW");
 
     Serial.print("State: ");
     switch (State)
@@ -369,12 +362,41 @@ void PC_Comms () {
     Serial.print("Emergency Switch: ");
     Serial.println(E_Stop ? "On" : "Off");
 
-    Serial.print("(t) Theta (0 - 95): ");
-    Serial.println(theta);
+    Serial.print("Load Discontinuity: ");
+    Serial.println(PCC_Disconnected ? "True" : "False");
+
+    Serial.print("(t) Theta (0° - 95°): ");
+    Serial.print(theta);
+    Serial.println("°");
+
+    Serial.print("Real Theta (From Linear Actuator): ");
+    Serial.print(actual_Theta);
+    Serial.println("°");
+
+    Serial.print("(o) Load Optimization: ");
+    Serial.println(load_Optimize_Enable ? "Enabled" : "Disabled");
 
     Serial.print("(v) Load DAC Voltage ( 0mV - 3300mV ): ");
     Serial.print(DAC_Voltage);
     Serial.println(" mV");
+
+    Serial.print("Load Voltage: ");
+    Serial.print(L_Voltage);
+    Serial.println(" mV");
+
+    Serial.print("Load Current: ");
+    Serial.print(L_Current);
+    Serial.println(" mA");
+
+    Serial.print("Load Power: ");
+    Serial.print(L_Power);
+    Serial.println(" mW");
+
+    Serial.print("RPM: ");
+    Serial.println(RPM_Filtered);
+
+    Serial.println("--------------------------------------");
+    Serial.println();
   }
   if (Serial.available() > 0)
   {
@@ -397,6 +419,7 @@ void PC_Comms () {
 
       case 't':
         theta = Serial.parseFloat();
+        set_Theta();
         break;
 
       case 'v':
@@ -408,64 +431,41 @@ void PC_Comms () {
         break;
     }
   }
-  Serial.println();
-  Serial.println();
-  Serial.println();
 }
 
 void optimize_Load() {
   if (load_Optimize_Enable) {
-    if (L_Power > regulate_Power_Setpoint) {                                           //Check if power regulation is needed
+    if (L_Power > regulate_Power_Setpoint) {                                //Check if power regulation is needed
       if ( DAC_Voltage >= DAC_Perturbation) {
         DAC_Voltage_Previous = DAC_Voltage;
-        DAC_Voltage = DAC_Voltage - DAC_Perturbation;                         //Regulate power
+        DAC_Voltage = DAC_Voltage - DAC_Perturbation;                       //Regulate power
       }
     }
     else {
       if ( DAC_Voltage <= DAC_Perturbation) {
-            DAC_Voltage = DAC_Voltage + DAC_Perturbation;                     //Increase DAC voltage
-          }
+        DAC_Voltage = DAC_Voltage + DAC_Perturbation;                       //Increase DAC voltage
+      }
       else if ( DAC_Voltage >= DAC_Voltage_Maximum - DAC_Perturbation) {
-            DAC_Voltage = DAC_Voltage - DAC_Perturbation;                     //Increase DAC voltage
-          }
-      else if (L_Power - L_Power_Previous > 0) {                                   //Check if power increased
-        if (DAC_Voltage - DAC_Voltage_Previous >= 0) {                        //Check positive or negative adjustment
-          DAC_Voltage_Previous = DAC_Voltage;                                 //Save last DAC voltage
-          //if ( DAC_Voltage <= DAC_Voltage_Maximum - DAC_Perturbation) {
-            DAC_Voltage = DAC_Voltage + DAC_Perturbation;                     //Increase DAC voltage
-//          }
-//         else {
-//            DAC_Voltage = DAC_Voltage - DAC_Perturbation;                     //Decrease DAC voltage
-//          }
+        DAC_Voltage = DAC_Voltage - DAC_Perturbation;                       //Increase DAC voltage
+      }
+      else if (L_Power - L_Power_Previous > 0) {                            //Check if power increased
+        if (DAC_Voltage - DAC_Voltage_Previous >= 0) {                      //Check positive or negative adjustment
+          DAC_Voltage_Previous = DAC_Voltage;                               //Save last DAC voltage
+          DAC_Voltage = DAC_Voltage + DAC_Perturbation;                     //Increase DAC voltage
         }
-        else if (DAC_Voltage - DAC_Voltage_Previous < 0) {                    //Check positive or negative adjustment
-          DAC_Voltage_Previous = DAC_Voltage;                                 //Save last DAC voltage
-          //if ( DAC_Voltage >= DAC_Perturbation) {
-            DAC_Voltage = DAC_Voltage - DAC_Perturbation;                     //Decrease DAC voltage
-//          }
-//          else {
-//            DAC_Voltage = DAC_Voltage + DAC_Perturbation;                     //Increase DAC voltage
-//          }
+        else if (DAC_Voltage - DAC_Voltage_Previous < 0) {                  //Check positive or negative adjustment
+          DAC_Voltage_Previous = DAC_Voltage;                               //Save last DAC voltage
+          DAC_Voltage = DAC_Voltage - DAC_Perturbation;                     //Decrease DAC voltage
         }
       }
-      else if (L_Power - L_Power_Previous <= 0) {                             //Check if power decreased
-        if (DAC_Voltage - DAC_Voltage_Previous > 0) {                         //Check positive or negative adjustment
-          DAC_Voltage_Previous = DAC_Voltage;                                 //Save last DAC voltage
-          //if ( DAC_Voltage >= DAC_Perturbation) {
-            DAC_Voltage = DAC_Voltage - DAC_Perturbation;                     //Decrease DAC voltage
-//          }
-//          else {
-//            DAC_Voltage = DAC_Voltage + DAC_Perturbation;                     //Increase DAC voltage
-//          }
+      else if (L_Power - L_Power_Previous <= 0) {                           //Check if power decreased
+        if (DAC_Voltage - DAC_Voltage_Previous > 0) {                       //Check positive or negative adjustment
+          DAC_Voltage_Previous = DAC_Voltage;                               //Save last DAC voltage
+          DAC_Voltage = DAC_Voltage - DAC_Perturbation;                     //Decrease DAC voltage
         }
-        else if (DAC_Voltage - DAC_Voltage_Previous <= 0) {                   //Check positive or negative adjustment
-          DAC_Voltage_Previous = DAC_Voltage;                                 //Save last DAC voltage
-          //if ( DAC_Voltage <= DAC_Voltage_Maximum - DAC_Perturbation) {
-            DAC_Voltage = DAC_Voltage + DAC_Perturbation;                     //Increase DAC voltage
-//          }
-//          else {
-//            DAC_Voltage = DAC_Voltage - DAC_Perturbation;                     //Decrease DAC voltage
-//          }
+        else if (DAC_Voltage - DAC_Voltage_Previous <= 0) {                 //Check positive or negative adjustment
+          DAC_Voltage_Previous = DAC_Voltage;                               //Save last DAC voltage
+          DAC_Voltage = DAC_Voltage + DAC_Perturbation;                     //Increase DAC voltage
         }
       }
     }
