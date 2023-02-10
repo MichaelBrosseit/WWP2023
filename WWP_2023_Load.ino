@@ -10,10 +10,10 @@ Adafruit_MCP4725 dac;           //Initailize DAC
 #define Linear_Actuator_Enable 16
 #define Linear_Actuator_Tx 1
 #define Linear_Actuator_Rx 0
-#define RPM_Pin 29
+#define RPM_Pin 30
 #define PCC_Relay_Pin 33
 #define EStop_Pin 11
-#define PCC_Disconnect_Pin 30
+#define PCC_Disconnect_Pin 29
 
 PA12 myServo(&Serial1, Linear_Actuator_Enable, 1);
 //          (&Serial, enable_pin,  Tx Level)
