@@ -113,6 +113,7 @@ void loop() {
     read_EStop();
     //read_PCC_Disconnect();
     manage_State();
+    read_RPM();
   }
 
   if (millis() - Timer_Medium >= Medium_Interval)
