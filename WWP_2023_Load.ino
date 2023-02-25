@@ -21,8 +21,8 @@ PA12 myServo(&Serial1, Linear_Actuator_Enable, 1);
 //Adjustable Variables
 uint16_t regulate_RPM_Setpoint = 4000;
 uint16_t regulate_Power_Setpoint = 25000;//(mW)
-float optimal_Theta = 20;
-float cutin_Theta = 25;
+float optimal_Theta = 30;
+float cutin_Theta = 43;
 float brake_Theta = 95;
 float DAC_Voltage_Cutin = 0;
 
@@ -65,17 +65,20 @@ PCC_Disconnect_States PCC_Disconnect_State = Wait;
 //Timer Intervals
 unsigned Fast_Interval = 10;
 unsigned Medium_Interval = 250;
-unsigned Slow_Interval = 1000;
+unsigned Slow_Interval = 500;
 unsigned Safety_Restart_Interval = 5000;
 unsigned Pitch_Transient_Interval = 100;
+unsigned RPM_Timeout_Interval = 500;
+
 //Timers
 unsigned long Timer_Fast;
 unsigned long Timer_Medium;
 unsigned long Timer_Slow;
 unsigned long Timer_Safety_Restart;
 unsigned long Timer_RPM_Transient;
+unsigned long Timer_RPM_Timeout;
 
-bool load_Optimize_Enable = true;
+bool load_Optimize_Enable = false;
 bool E_Stop = false;
 bool PCC_Disconnected = false;
 bool PCC_Relay = false;
@@ -96,10 +99,10 @@ void setup() {
 
   PCC_Relay = true;
   digitalWrite(PCC_Relay_Pin, PCC_Relay);
-  delay (500);
+  delay (4000);
   theta = cutin_Theta;
   set_Theta();
-  delay (2000);
+  delay (4000);
   PCC_Relay = false;
   DAC_Voltage = DAC_Voltage_Cutin;
 
@@ -228,6 +231,7 @@ void initialize_Timers() {
   Timer_Slow = millis();
   Timer_Safety_Restart = millis();
   Timer_RPM_Transient = millis();
+  Timer_RPM_Timeout = millis();
 }
 void initialize_Pins() {
   pinMode(Linear_Actuator_Enable, OUTPUT);
@@ -315,6 +319,21 @@ void set_Theta()
 
 void read_RPM() {
   attachInterrupt(digitalPinToInterrupt(RPM_Pin), RPM_Interupt, RISING);    //run ISR on rising edge
+//  if (millis() - Timer_RPM_Timeout >= RPM_Timeout_Interval)
+//  {
+//    Timer_RPM_Timeout = millis();
+//    Saved_RPM [0] = 0;
+//    Saved_RPM [1] = 0;
+//    Saved_RPM [2] = 0;
+//    Saved_RPM [3] = 0;
+//    Saved_RPM [4] = 0;
+//    Saved_RPM [5] = 0;
+//    Saved_RPM [6] = 0;
+//    Saved_RPM [7] = 0;
+//    Saved_RPM [8] = 0;
+//    Saved_RPM [9] = 0;
+//    RPM_Filtered = 0;
+//  }
 }
 
 void PC_Comms () {
@@ -362,6 +381,10 @@ void PC_Comms () {
 
     Serial.print("Emergency Switch: ");
     Serial.println(E_Stop ? "On" : "Off");
+
+
+    Serial.print("Turbine Side Voltage: ");
+    Serial.println(digitalRead(PCC_Disconnect_Pin) ? "High" : "Low");
 
     Serial.print("Load Discontinuity: ");
     Serial.println(PCC_Disconnected ? "True" : "False");
@@ -415,7 +438,7 @@ void PC_Comms () {
 
       case 'p':
         PCC_Relay = !PCC_Relay;
-        digitalWrite(24, PCC_Relay);
+        digitalWrite(PCC_Relay_Pin, PCC_Relay);
         break;
 
       case 't':
@@ -475,6 +498,7 @@ void optimize_Load() {
 
 void RPM_Interupt() {
   TempStore_RPM = micros();
+  Timer_RPM_Timeout = millis();
   if (digitalRead(RPM_Pin) == HIGH) {
     if (FirstRead_RPM) {
       Htime1 = TempStore_RPM;                                               //capture first rising edge time
